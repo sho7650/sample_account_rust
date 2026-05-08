@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/sho7650/sample_account_rust/compare/v0.6.0...v0.6.1) (2026-05-08)
+
+
+### Bug Fixes
+
+* chain release-please and binary upload into single workflow ([ebae9d2](https://github.com/sho7650/sample_account_rust/commit/ebae9d2e267b14e7c8ef066ca0a49488311f7bb7))
+* chain release-please and binary upload into single workflow ([24c5ab9](https://github.com/sho7650/sample_account_rust/commit/24c5ab9b8f6138f9d63d336dbe6750e296d2fd1d))
+
 ## [0.6.0](https://github.com/sho7650/sample_account_rust/compare/v0.5.0...v0.6.0) (2026-05-08)
 
 
