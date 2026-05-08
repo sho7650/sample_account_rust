@@ -1,5 +1,7 @@
 # sample_account (Rust port)
 
+[![CI](https://github.com/sho7650/sample_account_rust/actions/workflows/ci.yml/badge.svg)](https://github.com/sho7650/sample_account_rust/actions/workflows/ci.yml)
+
 Synthetic Japanese personal-account record generator (name, address, age,
 mail, phone, etc.). Outputs CSV on stdout. Columns are selected via
 short/long option flags — flag occurrence order determines column order.
@@ -14,12 +16,19 @@ nix develop                              # enter dev shell with rustc + cargo + 
 cargo run --release -- --help            # show options
 cargo run --release -- -ilfm 10          # 10 rows: id, last/first name (kanji,kana), email
 cargo run --release -- -j 0 -ilfm 100000 # 100k rows on all CPU cores
-cargo test                               # 50+ tests across unit, integration, snapshot
+cargo test                               # 60+ tests across unit, integration, snapshot
 ```
 
-The binary must be run from the repo root because data file paths are
-relative (`data/sample_account.csv`, etc.). Running elsewhere triggers
-an I/O error.
+The CSV data files are **embedded into the binary at compile time**, so
+the executable runs from any working directory:
+
+```sh
+cargo install --path .         # install to ~/.cargo/bin
+cd /tmp                        # any directory works
+sample_account -ilfm 3         # data is baked in, no data/ needed next to binary
+```
+
+(Closes [issue #1](https://github.com/sho7650/sample_account_rust/issues/1).)
 
 ## Build & development
 
@@ -227,6 +236,9 @@ SAMPLE_ACCOUNT_SEED=42 SAMPLE_ACCOUNT_NOW=1700000000 \
 - **No byte-for-byte snapshot compatibility.** The C++ version uses libc
   `rand()`; this port uses `rand::rngs::SmallRng`. Snapshots were
   regenerated.
+- **CSV data is embedded in the binary** via `include_str!` so the
+  executable runs from any working directory. The C++ version required
+  `cd repo_root` because it loaded `./data/*.csv` at runtime.
 - **Field dispatch is via `fn` pointer table instead of `unique_ptr<IField>`
   vector.** Same observable behavior, no heap allocation.
 - **CSV parsing is hand-rolled** (no `csv` crate). Data files are simple
