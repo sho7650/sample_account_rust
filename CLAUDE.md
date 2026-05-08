@@ -39,8 +39,10 @@ cargo run --release -- -ilfm 10
 cargo run --release -- -j 0 -ilfm 100000  # multi-core generation
 ```
 
-The binary must be run from the repo root because data file paths are
-relative (`data/*.csv`).
+The CSV data files are embedded into the binary at compile time via
+`include_str!` (see `src/repos.rs::EMBEDDED_*_CSV`), so the binary works
+from any working directory. The `data/*.csv` files are still on disk for
+the file-based loader (`load_*(path)`) used by `tests/repos.rs`.
 
 ## Architecture
 
@@ -57,8 +59,11 @@ Generation Layer src/registry.rs   (Field table, 17 emit fns, FIELDS slice)
                                     AgeAndDateGenerator)
                  src/rng.rs        (SmallRng wrapper + env vars)
                      │
-Data Layer       src/repos.rs      (CSV loaders + record structs +
-                                    RepoError)
+Data Layer       src/repos.rs      (record structs + RepoError +
+                                    parse_*<R: BufRead> helpers +
+                                    load_*(path) for file I/O +
+                                    default_*() using include_str!
+                                    embedded const &str)
 ```
 
 ### Adding a new column
@@ -125,6 +130,17 @@ Repositories are read-only after construction. They are loaded once in
 `try_main` and borrowed by Generators (`'a` lifetime tied to `main`'s
 stack). Loaders return `Result<_, RepoError>`. To swap data sources,
 write equivalent loader functions returning the same record types.
+
+`src/repos.rs` exposes two parallel APIs:
+- `default_*()` — parses CSV bytes baked in via `include_str!`. Used by
+  `main`; works from any working directory.
+- `load_*(path)` — opens a file and parses it. Kept so `tests/repos.rs`
+  can verify the on-disk CSV format. Both share the same private
+  `parse_*<R: BufRead>(reader, source)` body.
+
+When `data/*.csv` files are updated, the binary needs a rebuild
+(`include_str!` is compile-time). Both APIs read identical bytes after
+rebuild — verified by `default_*_matches_load_*` unit tests.
 
 ## Determinism / test hooks
 

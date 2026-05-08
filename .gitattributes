@@ -1,0 +1,22 @@
+# Force LF line endings for all text files. Without this, Windows CI
+# checkouts would convert to CRLF, corrupting:
+#   - data/*.csv (CSV parser sees stray \r at end of fields)
+#   - tests/expected/*.csv (snapshot diff reports false drift)
+#   - *.rs (rustfmt false positives, occasional compile errors)
+#
+# Reference: https://git-scm.com/docs/gitattributes#_end_of_line_conversion
+
+* text=auto eol=lf
+
+*.rs        text eol=lf
+*.toml      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.nix       text eol=lf
+*.sh        text eol=lf
+*.csv       text eol=lf
+.gitignore  text eol=lf
+.envrc      text eol=lf
+LICENSE     text eol=lf

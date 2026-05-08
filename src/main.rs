@@ -9,7 +9,7 @@ use sample_account::cli::{parse_args, print_help};
 use sample_account::field::{Deps, RowContext};
 use sample_account::generators::{AddressGenerator, AgeAndDateGenerator, PersonGenerator};
 use sample_account::registry::Field;
-use sample_account::repos::{load_ages, load_persons, load_prefectures};
+use sample_account::repos::{default_ages, default_persons, default_prefectures};
 use sample_account::rng::{current_time, derive_row_seed, master_seed_from_env, Rng};
 
 /// Average bytes per emitted row. Used to pre-size per-worker chunk
@@ -73,10 +73,12 @@ where
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Load all repositories once, up front.
-    let persons = load_persons("data/sample_account.csv")?;
-    let pref_repo = load_prefectures("data/prefectures.csv", "data/address.csv")?;
-    let age_repo = load_ages("data/ages.csv")?;
+    // Load all repositories once, up front. Data is embedded in the
+    // binary at compile time (see src/repos.rs::EMBEDDED_*_CSV) so this
+    // works regardless of the current working directory.
+    let persons = default_persons()?;
+    let pref_repo = default_prefectures()?;
+    let age_repo = default_ages()?;
 
     // Cache "now" once. Workers reuse these so the hot loop never reads
     // env vars per row.
