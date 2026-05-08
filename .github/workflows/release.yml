@@ -1,0 +1,107 @@
+name: release
+
+# Two entry points:
+#
+# 1. push:main — normal release-please flow.
+#    The release-please job runs on every main push; it opens/updates a
+#    release PR. When that PR is merged, release_created becomes true and
+#    upload-assets builds the 3 native binaries and attaches them to the
+#    fresh GitHub Release in the SAME workflow run.
+#
+#    Why one workflow instead of two? Because GitHub explicitly blocks
+#    GITHUB_TOKEN-created events from triggering new workflow runs:
+#    https://github.com/googleapis/release-please-action#triggering
+#      "When you use the repository's GITHUB_TOKEN to perform tasks,
+#       events triggered by the GITHUB_TOKEN will not create a new
+#       workflow run."
+#    A separate `on: release` workflow would never fire from
+#    release-please's release. Chaining via `needs:` in one workflow
+#    sidesteps this without needing a Personal Access Token.
+#
+# 2. workflow_dispatch — manual backfill.
+#    Use when a release was created without assets (e.g. v0.6.0 was
+#    cut before this fix landed) or to re-attach assets after a manual
+#    asset deletion. Pass `tag` = `v0.6.0`; the release-please job is
+#    skipped, and upload-assets runs against the supplied tag.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to backfill binaries to (e.g. v0.6.0). Leave empty for normal release-please flow."
+        required: false
+        default: ""
+
+permissions:
+  contents:      write
+  issues:        write
+  pull-requests: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name:        ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file:   release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  upload-assets:
+    needs: release-please
+    # Run when:
+    #   - push:main and release-please created a new release; OR
+    #   - workflow_dispatch with a non-empty `tag` input.
+    # `always()` is required so this job evaluates even when
+    # `release-please` is skipped (workflow_dispatch path).
+    if: |
+      always() &&
+      (
+        (github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+      )
+    permissions:
+      contents: write   # for taiki-e/upload-rust-binary-action
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 3 native targets only. No cross-compilation. See
+          # docs/design-embed-and-cicd.md §5 for rationale.
+          - target: x86_64-unknown-linux-gnu
+            os:     ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os:     windows-latest
+          - target: aarch64-apple-darwin
+            os:     macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Check out the *tagged* source so the build matches what the
+      # release page advertises.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin:      sample_account
+          target:   ${{ matrix.target }}
+          archive:  $bin-$tag-$target
+          tar:      unix
+          zip:      windows
+          include:  LICENSE,README.md
+          checksum: sha256
+          # `ref` here tells taiki-e which release to upload assets to.
+          # It must be a fully-formed `refs/tags/...` ref.
+          ref:      refs/tags/${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
+          token:    ${{ secrets.GITHUB_TOKEN }}

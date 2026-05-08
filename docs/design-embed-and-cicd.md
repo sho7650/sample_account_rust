@@ -209,7 +209,18 @@ jobs:
 
 Default `${{ github.token }}` (= `secrets.GITHUB_TOKEN`) is used. **No PAT** required because:
 - The action only needs `contents/issues/pull-requests` write — all granted by `permissions:` block.
-- Tag creation by `GITHUB_TOKEN` does **not** trigger downstream workflows (per [GitHub docs on `GITHUB_TOKEN` and workflow events](https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow)). This is **intentional**: the binary build workflow listens on `release: types: [created]` instead of `push: tags`, which DOES fire from `GITHUB_TOKEN`-created releases. Verified by [release-please-action docs](https://github.com/googleapis/release-please-action#how-do-i-change-the-version-number) which note this exact pattern.
+- The asset-upload job runs in the **same workflow** (chained via `needs:` against release-please's `release_created` output), so the
+  GITHUB_TOKEN-cannot-trigger-downstream-workflows restriction is sidestepped — see §5.1.
+
+> **Correction (post-v0.6.0).** An earlier version of this document
+> claimed that a separate `on: release: types: [created]` workflow would
+> fire when release-please-action creates a release via GITHUB_TOKEN.
+> **That was wrong.** Per the release-please-action README:
+> _"When you use the repository's GITHUB_TOKEN to perform tasks, events
+> triggered by the GITHUB_TOKEN will not create a new workflow run."_
+> Neither `release: created` NOR `push: tags` fires under those
+> conditions. Tag v0.6.0 was published with no assets because of this
+> bug; fixed in PR by combining the two workflows into one (§5.1).
 
 ### 4.5 What release-please modifies
 
@@ -233,15 +244,40 @@ Per `release-type: rust`:
 
 ## 5. Phase 4 — Cross-platform release binaries
 
-### 5.1 Trigger
+### 5.1 Trigger — combined into one workflow (was: separate)
+
+The asset upload job lives in the **same** `.github/workflows/release.yml` file as the release-please job. Two jobs, one workflow run:
 
 ```yaml
 on:
-  release:
-    types: [created]
+  push:    { branches: [main] }     # normal release-please flow
+  workflow_dispatch:                # manual backfill (see below)
+    inputs:
+      tag: { required: false, default: "" }
+
+jobs:
+  release-please: { ... outputs release_created, tag_name ... }
+
+  upload-assets:
+    needs: release-please
+    if: |
+      always() &&
+      (
+        (github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+      )
+    strategy:
+      matrix: ...3 native targets...
 ```
 
-This fires when release-please's release PR is merged and the action calls the GitHub Releases API. Verified by [taiki-e/upload-rust-binary-action README — Supported events](https://github.com/taiki-e/upload-rust-binary-action#supported-events).
+**Why combined?** Per the release-please-action README:
+> "When you use the repository's GITHUB_TOKEN to perform tasks, events triggered by the GITHUB_TOKEN will not create a new workflow run."
+
+A standalone `on: release: types: [created]` workflow would never fire from a release-please-created release (which uses GITHUB_TOKEN by default). The fix is either:
+1. **(picked)** Chain via `needs:` in the same workflow run — no PAT needed, no recursion concern.
+2. (rejected) Issue a Personal Access Token, store as a secret, pass to release-please as `token`. Adds secret-management overhead.
+
+**Manual backfill via workflow_dispatch.** When a release was already created without assets (e.g. v0.6.0 cut before this fix), `gh workflow run release.yml -f tag=v0.6.0` re-runs the asset upload against an existing tag. The release-please job is skipped (`if: github.event_name == 'push'`), upload-assets runs in dispatch mode using `inputs.tag`.
 
 ### 5.2 Target matrix
 
@@ -266,20 +302,49 @@ This fires when release-please's release PR is merged and the action calls the G
 
 **Trade-off accepted**: Intel Mac users (`x86_64-apple-darwin`) and ARM Linux users (`aarch64-unknown-linux-gnu`) must `cargo install --git ...` from source. Documented in README.
 
-### 5.4 Workflow shape
+### 5.4 Workflow shape — `.github/workflows/release.yml`
 
-`.github/workflows/release-binaries.yml`:
+The combined workflow (see §5.1 for trigger logic). Both jobs are in
+this single file; the `release-binaries.yml` from the v1 design has
+been removed.
+
 ```yaml
-name: release-binaries
+name: release
 on:
-  release:
-    types: [created]
+  push:    { branches: [main] }
+  workflow_dispatch:
+    inputs:
+      tag: { description: "...", required: false, default: "" }
+
 permissions:
-  contents: read
+  contents:      write
+  issues:        write
+  pull-requests: write
+
 jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name:        ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file:   release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   upload-assets:
+    needs: release-please
+    if: |
+      always() &&
+      (
+        (github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+      )
     permissions:
-      contents: write   # for taiki-e/upload-rust-binary-action
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -290,6 +355,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin:      sample_account
@@ -299,10 +366,11 @@ jobs:
           zip:      windows
           include:  LICENSE,README.md
           checksum: sha256
+          ref:      refs/tags/${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
           token:    ${{ secrets.GITHUB_TOKEN }}
 ```
 
-**Source**: Inputs verified against [taiki-e action.yml](https://github.com/taiki-e/upload-rust-binary-action/blob/main/action.yml). All 3 targets are native to their respective runners → no cross-compilation, no extra toolchain setup.
+**Sources**: Inputs verified against [taiki-e action.yml](https://github.com/taiki-e/upload-rust-binary-action/blob/main/action.yml). The `ref: refs/tags/...` input uploads to a specific tag — see [taiki-e README "Supported events"](https://github.com/taiki-e/upload-rust-binary-action#supported-events) ("You can upload binaries from arbitrary event to arbitrary tag by specifying the `ref` input option"). All 3 targets are native to their respective runners → no cross-compilation, no extra toolchain setup.
 
 ### 5.5 Asset naming
 

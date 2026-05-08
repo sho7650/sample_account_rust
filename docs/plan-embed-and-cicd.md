@@ -185,7 +185,7 @@ Closes #1.
 | `release-please-config.json` | Release-please rust release-type config (per design §4.2) |
 | `.release-please-manifest.json` | `{ ".": "0.5.0" }` baseline |
 | `.github/workflows/release-please.yml` | Workflow per design §4.3 |
-| `.github/workflows/release-binaries.yml` | Workflow per design §5.4, 8-target matrix |
+| `.github/workflows/release.yml` | Combined workflow per design §5.1 / §5.4 (release-please + 3-target binaries chained via `needs:`). Replaces the v1 split into release-please.yml + release-binaries.yml, which was broken because GITHUB_TOKEN-created releases don't trigger downstream workflows. |
 
 #### Modified
 
