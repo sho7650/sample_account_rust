@@ -1,0 +1,27 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+# https://github.com/googleapis/release-please-action#permissions
+permissions:
+  contents:      write
+  issues:        write
+  pull-requests: write
+
+# Avoid running multiple release-please jobs concurrently against the
+# same branch, but never cancel an in-flight one — we want every push to
+# main to be considered.
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file:   release-please-config.json
+          manifest-file: .release-please-manifest.json
