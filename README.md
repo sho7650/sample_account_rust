@@ -9,7 +9,36 @@ short/long option flags — flag occurrence order determines column order.
 A Rust port of the C++17 implementation at
 `/Volumes/dev/src/cpp/work/sample_account/`.
 
-## Quick start
+## Installation
+
+### Pre-built binaries (recommended)
+
+Download the appropriate archive for your platform from the [latest GitHub Release](https://github.com/sho7650/sample_account_rust/releases/latest):
+
+| Platform | Archive name |
+|---|---|
+| Linux x86_64 | `sample_account-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Windows x86_64 | `sample_account-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
+| macOS Apple Silicon | `sample_account-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+
+Each archive contains the `sample_account` binary, `LICENSE`, and `README.md`. A matching `.sha256` checksum is published alongside.
+
+```sh
+# Linux / macOS example
+curl -L -o sample_account.tar.gz \
+  https://github.com/sho7650/sample_account_rust/releases/latest/download/sample_account-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf sample_account.tar.gz
+./sample_account -ilfm 10
+```
+
+On macOS the first run may be blocked by Gatekeeper because the binary is not code-signed:
+```sh
+xattr -d com.apple.quarantine sample_account
+```
+
+For platforms not in the prebuilt list (Linux ARM/musl, Intel macOS, Windows MinGW) build from source via `cargo install --git https://github.com/sho7650/sample_account_rust`.
+
+### Build from source
 
 ```sh
 nix develop                              # enter dev shell with rustc + cargo + clippy + rustfmt

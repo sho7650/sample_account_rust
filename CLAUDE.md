@@ -205,10 +205,34 @@ from the C++ repo.
 | Integration tests for repository loaders against real CSVs | `tests/repos.rs` |
 | Snapshot tests (run binary, diff stdout) | `tests/snapshot.rs` |
 
-## Recent commit style
+## Recent commit style — Conventional Commits required
 
-This is a fresh port; follow conventional commits (`feat:`, `fix:`,
-`refactor:`). Reference the C++ source where useful for context.
+[release-please](https://github.com/googleapis/release-please) automates
+versioning and CHANGELOG generation by parsing commit messages on `main`.
+Every commit message MUST follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/):
+
+| Prefix | Effect (pre-1.0, with `bump-minor-pre-major`) | Example |
+|---|---|---|
+| `feat:` | minor bump (0.5.0 → 0.6.0) | `feat: add CSV column for credit limit` |
+| `fix:` | patch bump (0.5.0 → 0.5.1) | `fix: handle empty city in address.csv` |
+| `feat!:` or `BREAKING CHANGE:` footer | also minor pre-1.0 (per `bump-patch-for-minor-pre-major: false`) | |
+| `docs:` / `chore:` / `ci:` / `test:` / `refactor:` / `perf:` | **no bump** | `docs: clarify per-row RNG derivation` |
+
+Non-conformant messages are silently ignored by release-please (no bump,
+no CHANGELOG entry). Reviewers should reject PRs with non-conventional
+commit messages on the squash-merge title.
+
+## Release flow
+
+1. Land conventional `feat:` / `fix:` PRs on `main`.
+2. The [`release-please` workflow](.github/workflows/release-please.yml)
+   opens or updates a "release PR" titled `chore(main): release X.Y.Z`.
+3. Merge the release PR — it tags `vX.Y.Z` and creates a GitHub Release.
+4. The [`release-binaries` workflow](.github/workflows/release-binaries.yml)
+   fires on `release: created`, builds 3 native targets (Linux x86_64,
+   Windows MSVC, macOS Apple Silicon) via
+   [taiki-e/upload-rust-binary-action](https://github.com/taiki-e/upload-rust-binary-action),
+   and uploads 6 assets (3 archives + 3 `.sha256`).
 
 ## Planning docs
 
