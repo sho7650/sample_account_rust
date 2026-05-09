@@ -158,6 +158,41 @@ When to use which:
   spare cores. Output is order-preserving — row 1 always comes before
   row 2 even when 12 workers are emitting concurrently.
 
+## Output destinations
+
+By default the binary writes CSV to stdout. Two flags redirect that:
+
+```sh
+sample_account -ilfm 100                          # stdout (default, unchanged)
+sample_account -ilfm 100 --output out.csv         # plain CSV file
+sample_account -ilfm 100 --output out.zip --zip   # single-entry ZIP archive
+```
+
+`--zip` wraps the output in a Deflate-compressed ZIP archive (the same
+format produced by `zip` / `unzip`). The archive contains exactly one
+entry whose name is the basename of `--output` with a trailing `.zip`
+stripped (e.g. `--output out.zip --zip` → entry `out`,
+`--output data.csv.zip --zip` → entry `data.csv`).
+
+`--zip` requires `--output` because building a ZIP archive needs a
+seekable sink (the central directory is appended at the end and local
+file headers are patched in place); stdout is not seekable. Running
+`--zip` without `--output` fails with exit code 2 and a message
+pointing the user at `--output`.
+
+The compressed bytes are reproducible — `SAMPLE_ACCOUNT_NOW` also pins
+the entry's last-modified timestamp, and the compression level (`6`),
+unix permissions (`0o644`), and `zip` crate version are pinned in
+`Cargo.toml`. Two runs with identical pinned env produce byte-identical
+archives.
+
+The streaming model is preserved: rows flow row-by-row into the deflate
+stream; peak RSS stays in the same envelope as the plain-CSV path.
+
+To drop ZIP support and shave ~250-400 KB off a release build, build
+with `cargo build --no-default-features --release`. With the feature
+off, `--zip` errors at sink construction with a clear message.
+
 ## Determinism
 
 Two environment variables make output reproducible — used by snapshot

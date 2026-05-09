@@ -20,10 +20,25 @@ include      = [
     "README.md",
 ]
 
+[features]
+default = ["zip"]
+# Opt-out via `cargo build --no-default-features` to drop ~250-400 KB.
+zip = ["dep:zip"]
+
 [dependencies]
 rand  = { version = "0.9", features = ["small_rng"] }
 rayon = "1.10"
 time  = "0.3"
+
+# Pinned exact for byte-deterministic .zip output across cargo updates.
+# default-features off avoids AES, bzip2, lzma, xz, zstd, and the zopfli
+# deflate backend; "deflate-flate2-zlib-rs" picks the pure-Rust zlib-rs
+# backend for flate2 — no system zlib, no C deps, deterministic output.
+[dependencies.zip]
+version          = "=4.2.0"
+default-features = false
+features         = ["deflate-flate2-zlib-rs"]
+optional         = true
 
 [profile.release]
 opt-level = 3

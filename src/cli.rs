@@ -8,6 +8,10 @@
 //! - `--telehpne` legacy alias for `--telephone` (preserves typo)
 //! - `-j N` / `-jN` / `--jobs N` / `--jobs=N` for thread count
 //!   (0 = auto-detect cores, 1 = single-threaded, N>=2 = N threads)
+//! - `--output PATH` / `--output=PATH` writes CSV to a file instead of stdout.
+//!   Long-only — `'o'` is taken by the `agegroup` field flag.
+//! - `--zip` wraps the output in a single-entry ZIP archive. Requires
+//!   `--output` (ZIP requires a seekable sink; stdout is not seekable).
 //! - one positional integer = COUNT (default 100, last one wins)
 //! - unknown flags → `error` set, callers print to stderr and exit 2
 
@@ -27,6 +31,10 @@ pub struct CliArgs {
     /// `1` means single-threaded sequential.
     /// `N >= 2` means `N` worker threads via rayon.
     pub jobs: u32,
+    /// Optional output file path. `None` = stdout.
+    pub output: Option<String>,
+    /// Wrap output in a single-entry ZIP archive. Requires `output`.
+    pub zip: bool,
     pub help: bool,
     pub error: Option<String>,
 }
@@ -85,6 +93,27 @@ where
             continue;
         }
 
+        // Output path: --output PATH / --output=PATH (long-only because
+        // 'o' is taken by the `agegroup` field flag).
+        if let Some(output_value) = parse_output_token(token, &argv, &mut i) {
+            match output_value {
+                Ok(p) => out.output = Some(p),
+                Err(e) => {
+                    out.error = Some(e);
+                    return out;
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        // ZIP toggle.
+        if token == "--zip" {
+            out.zip = true;
+            i += 1;
+            continue;
+        }
+
         if let Some(name) = token.strip_prefix("--") {
             // Long flag.
             if name == "telehpne" {
@@ -132,6 +161,13 @@ where
         if let Some(id) = registry::find_by_short('i') {
             out.selected_fields.push(id);
         }
+    }
+
+    // Cross-flag validation. ZIP needs a seekable sink (central directory
+    // is appended at the end and local headers are patched in place), and
+    // stdout has no seek — so refuse `--zip` without `--output`.
+    if out.zip && out.output.is_none() {
+        out.error = Some("--zip requires --output <PATH> (stdout is not seekable)".into());
     }
 
     out
@@ -183,6 +219,29 @@ fn parse_jobs_value(v: &str) -> Result<u32, String> {
         .map_err(|e| format!("invalid jobs value '{v}': {e}"))
 }
 
+/// Returns `Some(Ok(path))` if the token was a `--output` form (and may
+/// advance `i` to consume the value token). Returns `Some(Err)` if the
+/// token *was* the flag but the value was missing or empty. Returns
+/// `None` if not an --output flag.
+fn parse_output_token(token: &str, argv: &[String], i: &mut usize) -> Option<Result<String, String>> {
+    if let Some(v) = token.strip_prefix("--output=") {
+        if v.is_empty() {
+            return Some(Err("missing argument for --output".into()));
+        }
+        return Some(Ok(v.to_string()));
+    }
+    if token == "--output" {
+        return Some(match argv.get(*i + 1) {
+            Some(v) if !v.is_empty() => {
+                *i += 1;
+                Ok(v.clone())
+            }
+            _ => Err("missing argument for --output".into()),
+        });
+    }
+    None
+}
+
 pub fn print_help<W: Write>(out: &mut W, prog: &str) -> io::Result<()> {
     writeln!(
         out,
@@ -193,7 +252,9 @@ pub fn print_help<W: Write>(out: &mut W, prog: &str) -> io::Result<()> {
          COUNT defaults to {DEFAULT_ROW_COUNT}.\n\n\
          Options:\n  \
          -h, --help            show this help and exit\n  \
-         -j, --jobs <N>        thread count (0 = auto-detect cores, 1 = single, N = threads; default 1)"
+         -j, --jobs <N>        thread count (0 = auto-detect cores, 1 = single, N = threads; default 1)\n  \
+             --output <PATH>   write CSV to PATH instead of stdout\n  \
+             --zip             wrap output in a single-entry ZIP archive (requires --output)"
     )?;
     for f in registry::FIELDS {
         writeln!(out, "  -{}, --{:<13} {}", f.short, f.long, f.desc)?;
@@ -203,12 +264,15 @@ pub fn print_help<W: Write>(out: &mut W, prog: &str) -> io::Result<()> {
         "\nAliases:\n  --telehpne            legacy alias for --telephone\n\n\
          Environment variables (mainly for testing):\n  \
          SAMPLE_ACCOUNT_SEED   pin RNG seed for reproducible output\n  \
-         SAMPLE_ACCOUNT_NOW    pin \"current time\" (Unix epoch seconds)\n\n\
+         SAMPLE_ACCOUNT_NOW    pin \"current time\" (Unix epoch seconds; also pins the\n                         \
+                       ZIP entry's last-modified timestamp for reproducible archives)\n\n\
          Examples:\n  \
-         {prog} -ilfm 10                    # id, last/first name (kanji,kana), email\n  \
-         {prog} --age --prefecture 5        # age and prefecture for 5 rows\n  \
-         {prog} -ilfmpwc 100 > out.csv      # full record with address columns\n  \
-         {prog} -j 0 -ilfm 100000           # all cores, 100k rows"
+         {prog} -ilfm 10                       # id, last/first name (kanji,kana), email\n  \
+         {prog} --age --prefecture 5           # age and prefecture for 5 rows\n  \
+         {prog} -ilfmpwc 100 > out.csv         # full record with address columns\n  \
+         {prog} -j 0 -ilfm 100000              # all cores, 100k rows\n  \
+         {prog} -ilfm 100 --output out.csv     # write CSV to a file\n  \
+         {prog} -ilfm 100 --output out.zip --zip  # write a ZIP archive containing out.csv"
     )?;
     Ok(())
 }
@@ -352,5 +416,72 @@ mod tests {
         let a = parse(&["-i", "5"]);
         assert_eq!(shorts(&a), vec!['i']);
         assert_eq!(a.jobs, DEFAULT_JOBS);
+    }
+
+    // -------- output / zip parsing --------
+
+    #[test]
+    fn output_default_is_none() {
+        let a = parse(&["-i", "5"]);
+        assert_eq!(a.output, None);
+        assert!(!a.zip);
+        assert!(a.error.is_none());
+    }
+
+    #[test]
+    fn output_long_with_space_consumes_next_token() {
+        let a = parse(&["--output", "out.csv", "-ilfm", "5"]);
+        assert_eq!(a.output.as_deref(), Some("out.csv"));
+        assert_eq!(shorts(&a), vec!['i', 'l', 'f', 'm']);
+        assert_eq!(a.count, 5);
+    }
+
+    #[test]
+    fn output_long_with_equals() {
+        let a = parse(&["--output=out.csv", "-i", "5"]);
+        assert_eq!(a.output.as_deref(), Some("out.csv"));
+    }
+
+    #[test]
+    fn output_missing_value_sets_error() {
+        let a = parse(&["--output"]);
+        assert!(a.error.is_some());
+    }
+
+    #[test]
+    fn output_empty_value_sets_error() {
+        let a = parse(&["--output="]);
+        assert!(a.error.is_some());
+    }
+
+    #[test]
+    fn zip_alone_requires_output() {
+        let a = parse(&["--zip", "-i", "5"]);
+        assert!(a.zip);
+        assert!(
+            a.error
+                .as_ref()
+                .is_some_and(|s| s.contains("--output")),
+            "expected error mentioning --output, got {:?}",
+            a.error
+        );
+    }
+
+    #[test]
+    fn zip_with_output_parses_cleanly() {
+        let a = parse(&["--zip", "--output", "out.zip", "-ilfm", "5"]);
+        assert!(a.zip);
+        assert_eq!(a.output.as_deref(), Some("out.zip"));
+        assert!(a.error.is_none());
+        assert_eq!(shorts(&a), vec!['i', 'l', 'f', 'm']);
+    }
+
+    #[test]
+    fn output_does_not_swallow_field_letters() {
+        // -i should still be a field flag even if --output is later in argv.
+        let a = parse(&["-i", "--output", "x.csv", "5"]);
+        assert_eq!(shorts(&a), vec!['i']);
+        assert_eq!(a.output.as_deref(), Some("x.csv"));
+        assert_eq!(a.count, 5);
     }
 }

@@ -1,4 +1,4 @@
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use rayon::prelude::*;
@@ -8,6 +8,7 @@ use time::OffsetDateTime;
 use sample_account::cli::{parse_args, print_help};
 use sample_account::field::{Deps, RowContext};
 use sample_account::generators::{AddressGenerator, AgeAndDateGenerator, PersonGenerator};
+use sample_account::output::{OutputOptions, OutputSink};
 use sample_account::registry::Field;
 use sample_account::repos::{default_ages, default_persons, default_prefectures};
 use sample_account::rng::{current_time, derive_row_seed, master_seed_from_env, Rng};
@@ -15,10 +16,6 @@ use sample_account::rng::{current_time, derive_row_seed, master_seed_from_env, R
 /// Average bytes per emitted row. Used to pre-size per-worker chunk
 /// buffers. Generous for our 17 fields with kanji + numeric fields.
 const ROW_BYTE_HINT: usize = 256;
-
-/// Output flush buffer (1 MiB). Large enough to amortize syscall overhead
-/// at multi-million-row counts without ballooning memory.
-const OUT_BUF_BYTES: usize = 1 << 20;
 
 /// Rows per parallel batch. Bounds peak memory at roughly
 /// `BATCH_ROWS * ROW_BYTE_HINT` bytes (32 MiB) regardless of total row
@@ -99,8 +96,11 @@ where
     let fields: Vec<&'static Field> = parsed.selected_fields.clone();
     let jobs = parsed.effective_jobs();
 
-    let stdout = io::stdout();
-    let mut out = BufWriter::with_capacity(OUT_BUF_BYTES, stdout.lock());
+    let mut sink = OutputSink::open(OutputOptions {
+        path: parsed.output.as_deref(),
+        zip: parsed.zip,
+        now_unix,
+    })?;
 
     let rc = RowCtx {
         master_seed,
@@ -112,12 +112,12 @@ where
     };
 
     if jobs <= 1 || count < PARALLEL_MIN_ROWS {
-        run_serial(&mut out, count, &rc)?;
+        run_serial(sink.as_write(), count, &rc)?;
     } else {
-        run_parallel(&mut out, count, &rc, jobs)?;
+        run_parallel(sink.as_write(), count, &rc, jobs)?;
     }
 
-    out.flush()?;
+    sink.finalize()?;
     Ok(ExitCode::SUCCESS)
 }
 

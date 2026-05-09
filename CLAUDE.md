@@ -142,6 +142,46 @@ When `data/*.csv` files are updated, the binary needs a rebuild
 (`include_str!` is compile-time). Both APIs read identical bytes after
 rebuild — verified by `default_*_matches_load_*` unit tests.
 
+### Output sinks
+
+`run_serial` and `run_parallel` write CSV bytes through `&mut dyn Write`.
+The construction and lifecycle of that writer lives in `src/output.rs`
+behind `OutputSink`, which has three variants:
+
+| variant | when | wraps |
+|---|---|---|
+| `Stdout` | default (no `--output`) | `BufWriter<io::Stdout>` |
+| `File` | `--output PATH` (without `--zip`) | `BufWriter<File>` |
+| `Zip` | `--output PATH --zip` | `ZipWriter<BufWriter<File>>` (single Deflate entry, opened up front) |
+
+Hot loops never see this — they get `&mut dyn Write` from
+`OutputSink::as_write()`. **Always call `OutputSink::finalize()` after
+the runner returns** — dropping a `ZipWriter` without `finish()`
+produces a truncated archive (no central directory). `try_main` does
+this exactly once at the end.
+
+The `Zip` variant is gated behind the default-on Cargo feature `zip`.
+`cargo build --no-default-features` strips it entirely and `--zip`
+errors at sink construction with a clear "not compiled in" message.
+
+For deterministic ZIP archive bytes, the following are pinned in
+`src/output.rs::zip_sink`:
+- compression method `Deflated`, level `6` (zlib default)
+- unix permissions `0o644`
+- entry mtime derived from `SAMPLE_ACCOUNT_NOW` (rounded to 2-second
+  DOS-time resolution); fallback `2020-01-01T00:00:00` when out of range
+- entry name = `basename(path)` minus trailing `.zip`, fallback `output.csv`
+
+`Cargo.toml` pins `zip = "=4.2.0"` exactly with
+`features = ["deflate-flate2-zlib-rs"]` (pure-Rust zlib-rs backend, no
+C deps). Bumping the version may change the bytes — regenerate any
+byte-equality fixtures and bump the lockfile in the same PR.
+
+`--zip` requires `--output` because the central directory is appended
+at the end and local file headers are patched in place — both need a
+seekable sink, and stdout has no seek. `cli::parse_args` enforces this
+before sink construction so the error appears with exit code 2.
+
 ## Determinism / test hooks
 
 Two environment variables make output reproducible — used by
