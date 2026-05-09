@@ -90,15 +90,30 @@ the archive causes the check to fail.
 
 ### macOS — Apple notarization + Developer ID
 
-The macOS binary is signed with a Developer ID Application certificate,
-hardened-runtime-enabled, notarized by Apple, and stapled. Gatekeeper
-accepts it without any `xattr` workaround. To inspect the signature:
+The macOS binary is signed with a Developer ID Application certificate
+(Hardened Runtime enabled) and notarized by Apple. **The notarization
+ticket is not stapled** — Apple's `xcrun stapler` only supports
+`.app` / `.dmg` / `.pkg` / `.kext` / `.dext` containers, not raw
+Mach-O CLI binaries. Same trade-off as ripgrep, bat, uv. See
+[`docs/release-signing.md`](docs/release-signing.md) for full background.
+
+The practical implication: **at first launch on a clean Mac, your
+machine must be online** so Gatekeeper can confirm notarization with
+Apple's servers. Once accepted on first launch, subsequent runs work
+offline. To inspect manually:
 
 ```sh
+# Verify the code signature (works offline, after first launch).
 codesign --verify --deep --strict --verbose=2 sample_account
 codesign -dv --verbose=4 sample_account               # show signing identity + team ID
-xcrun stapler validate sample_account                 # confirm the notarization staple
+
+# Verify Gatekeeper acceptance (notarization). Needs network access.
+spctl --assess --type execute --verbose=4 sample_account
 ```
+
+If you need offline-verifiable signing (e.g. air-gapped install
+machines), open an issue — we can ship a `.pkg`-wrapped variant on
+demand.
 
 ### Windows — Authenticode (deferred)
 
