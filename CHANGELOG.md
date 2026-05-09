@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.1](https://github.com/sho7650/sample_account_rust/compare/v0.8.0...v0.8.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **release:** retry stapler on CloudKit propagation delay ([a3a7703](https://github.com/sho7650/sample_account_rust/commit/a3a77032f505543b586648ebd807ab2b2f9148d6))
+* **release:** retry stapler on CloudKit propagation delay ([25442cb](https://github.com/sho7650/sample_account_rust/commit/25442cb157b9c8a7727bb263f79bcad1f380925e))
+* **release:** skip stapler — standalone Mach-O cannot be stapled ([f1e38a2](https://github.com/sho7650/sample_account_rust/commit/f1e38a2795f154c83934a930cc6bd152d7d96637))
+* **release:** skip stapler — standalone Mach-O cannot be stapled ([c5164a8](https://github.com/sho7650/sample_account_rust/commit/c5164a873f00f08c964c3d2a78ce8a872b4be54f))
+
 ## [0.8.0](https://github.com/sho7650/sample_account_rust/compare/v0.7.0...v0.8.0) (2026-05-09)
 
 
