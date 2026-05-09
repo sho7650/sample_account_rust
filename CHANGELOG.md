@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/sho7650/sample_account_rust/compare/v0.6.1...v0.7.0) (2026-05-09)
+
+
+### Features
+
+* add --zip output flag for ZIP-compressed CSV archives ([482a151](https://github.com/sho7650/sample_account_rust/commit/482a151468f17718c69afea28fd72d8302eecafb))
+* add --zip output flag for ZIP-compressed CSV archives ([84415df](https://github.com/sho7650/sample_account_rust/commit/84415df4cbbce8d71aafe092c047a7284facb687))
+
 ## [0.6.1](https://github.com/sho7650/sample_account_rust/compare/v0.6.0...v0.6.1) (2026-05-08)
 
 
