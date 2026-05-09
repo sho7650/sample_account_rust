@@ -18,11 +18,39 @@ name: release
 #    release-please's release. Chaining via `needs:` in one workflow
 #    sidesteps this without needing a Personal Access Token.
 #
-# 2. workflow_dispatch — manual backfill.
-#    Use when a release was created without assets (e.g. v0.6.0 was
-#    cut before this fix landed) or to re-attach assets after a manual
-#    asset deletion. Pass `tag` = `v0.6.0`; the release-please job is
-#    skipped, and upload-assets runs against the supplied tag.
+# 2. workflow_dispatch — manual backfill / signing dry-run.
+#    Use to (a) backfill assets to an old release that was cut before
+#    the asset pipeline existed, or (b) dry-run the signing pipeline on
+#    a throwaway tag (e.g. v0.0.0-signing-test) before merging changes
+#    to the workflow itself. Pass `tag` = `v0.6.0`; release-please is
+#    skipped, upload-assets runs against the supplied tag.
+#
+# Signing chain per target:
+#   Linux x86_64    : cosign keyless (sigstore OIDC) on the archive.
+#   macOS aarch64   : Developer ID Application + Hardened Runtime +
+#                     Apple notarytool + stapler, then cosign keyless.
+#   Windows x86_64  : SignPath.io Authenticode signing of the .exe,
+#                     then cosign keyless on the archive.
+# .sha256 checksums are generated AFTER all signing/staple steps because
+# signing changes bytes — pre-sign checksums would be wrong.
+#
+# Required GitHub Secrets (all stored in the `release-signing`
+# environment with required-reviewer protection):
+#   MACOS_DEVELOPER_ID_P12_BASE64       base64-encoded .p12 export of the
+#                                       Developer ID Application certificate
+#   MACOS_DEVELOPER_ID_P12_PASSWORD     password set when exporting the .p12
+#   MACOS_DEVELOPER_ID_IDENTITY         exact `security find-identity` string,
+#                                       e.g. "Developer ID Application: NAME (TEAMID)"
+#   MACOS_NOTARY_API_KEY_BASE64         base64-encoded App Store Connect API
+#                                       key (.p8) with Developer role
+#   MACOS_NOTARY_API_KEY_ID             10-char Key ID from App Store Connect
+#   MACOS_NOTARY_API_ISSUER_ID          UUID Issuer ID from App Store Connect
+#   SIGNPATH_API_TOKEN                  SignPath.io API token (release policy)
+#   SIGNPATH_ORGANIZATION_ID            SignPath organization UUID
+#   SIGNPATH_PROJECT_SLUG               SignPath project slug
+#   SIGNPATH_SIGNING_POLICY_SLUG        SignPath signing policy slug
+#
+# See docs/release-signing.md for the full setup + rotation runbook.
 
 on:
   push:
@@ -70,21 +98,38 @@ jobs:
         (github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') ||
         (github.event_name == 'workflow_dispatch' && inputs.tag != '')
       )
+    # Environment-scoped secrets. The `release-signing` environment
+    # MUST be created in repo Settings → Environments and populated
+    # with the secrets listed at the top of this file. Required-
+    # reviewer protection on this environment is recommended (forces
+    # a manual approval before any release attaches signed binaries).
+    environment: release-signing
     permissions:
-      contents: write   # for taiki-e/upload-rust-binary-action
+      contents: write   # gh release upload
+      id-token: write   # cosign keyless OIDC
+      actions:  read    # SignPath downloads the unsigned artifact via the Actions API
     strategy:
       fail-fast: false
       matrix:
         include:
           # 3 native targets only. No cross-compilation. See
           # docs/design-embed-and-cicd.md §5 for rationale.
-          - target: x86_64-unknown-linux-gnu
-            os:     ubuntu-latest
-          - target: x86_64-pc-windows-msvc
-            os:     windows-latest
-          - target: aarch64-apple-darwin
-            os:     macos-latest
+          - target:      x86_64-unknown-linux-gnu
+            os:          ubuntu-latest
+            archive_ext: tar.gz
+            bin_ext:     ""
+          - target:      x86_64-pc-windows-msvc
+            os:          windows-latest
+            archive_ext: zip
+            bin_ext:     ".exe"
+          - target:      aarch64-apple-darwin
+            os:          macos-latest
+            archive_ext: tar.gz
+            bin_ext:     ""
     runs-on: ${{ matrix.os }}
+    env:
+      # Resolved tag (release-please output OR workflow_dispatch input).
+      RELEASE_TAG: ${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
     steps:
       # Check out the *tagged* source so the build matches what the
       # release page advertises.
@@ -92,16 +137,239 @@ jobs:
         with:
           ref: ${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
 
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          bin:      sample_account
-          target:   ${{ matrix.target }}
-          archive:  $bin-$tag-$target
-          tar:      unix
-          zip:      windows
-          include:  LICENSE,README.md
-          checksum: sha256
-          # `ref` here tells taiki-e which release to upload assets to.
-          # It must be a fully-formed `refs/tags/...` ref.
-          ref:      refs/tags/${{ inputs.tag != '' && inputs.tag || needs.release-please.outputs.tag_name }}
-          token:    ${{ secrets.GITHUB_TOKEN }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Release builds are infrequent; restore-only is fine.
+          save-if: "false"
+          key: release-${{ matrix.target }}
+
+      - name: cargo build --release
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ----- macOS: codesign + notarize + staple -----
+      # Runs only on the macOS matrix entry.
+
+      - name: Import Developer ID certificate (macOS)
+        if: runner.os == 'macOS'
+        env:
+          P12_BASE64:   ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Random keychain password — never read or persisted.
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          KEYCHAIN_PATH="$RUNNER_TEMP/release-signing.keychain-db"
+          P12_PATH="$RUNNER_TEMP/developer-id.p12"
+
+          echo "$P12_BASE64" | base64 --decode > "$P12_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$P12_PATH" \
+            -P "$P12_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Allow codesign to use the imported key without an interactive prompt.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Make this the default search list so codesign finds the cert.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$P12_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: codesign with Developer ID + Hardened Runtime (macOS)
+        if: runner.os == 'macOS'
+        env:
+          IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_IDENTITY }}
+        run: |
+          set -euo pipefail
+          BIN_PATH="target/${{ matrix.target }}/release/sample_account"
+
+          codesign --force \
+                   --options=runtime \
+                   --timestamp \
+                   --sign "$IDENTITY" \
+                   "$BIN_PATH"
+
+          codesign --verify --deep --strict --verbose=2 "$BIN_PATH"
+
+      - name: Notarize and staple (macOS)
+        if: runner.os == 'macOS'
+        env:
+          NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_API_KEY_BASE64 }}
+          NOTARY_KEY_ID:     ${{ secrets.MACOS_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID:  ${{ secrets.MACOS_NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          BIN_PATH="target/${{ matrix.target }}/release/sample_account"
+          KEY_PATH="$RUNNER_TEMP/notary_api_key.p8"
+          ZIP_PATH="$RUNNER_TEMP/notarize-input.zip"
+
+          echo "$NOTARY_KEY_BASE64" | base64 --decode > "$KEY_PATH"
+
+          # notarytool requires zip / dmg / pkg input. Zip the lone
+          # binary at top-level (not inside a folder).
+          /usr/bin/ditto -c -k --keepParent "$BIN_PATH" "$ZIP_PATH"
+
+          xcrun notarytool submit "$ZIP_PATH" \
+            --key      "$KEY_PATH" \
+            --key-id   "$NOTARY_KEY_ID" \
+            --issuer   "$NOTARY_ISSUER_ID" \
+            --wait \
+            --timeout  30m
+
+          rm -f "$KEY_PATH" "$ZIP_PATH"
+
+          # Staple the notarization ticket so the binary verifies offline.
+          xcrun stapler staple "$BIN_PATH"
+          xcrun stapler validate "$BIN_PATH"
+
+      - name: Cleanup keychain (macOS)
+        if: runner.os == 'macOS' && always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+
+      # ----- Windows: SignPath Authenticode signing -----
+      # Runs only on the Windows matrix entry. Pattern: upload the
+      # unsigned exe as a workflow artifact, hand the artifact id to
+      # SignPath which downloads + signs server-side, then download the
+      # signed exe back into the build tree.
+
+      - name: Stage unsigned exe (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p signpath-input
+          cp "target/${{ matrix.target }}/release/sample_account.exe" signpath-input/
+
+      - name: Upload unsigned exe to GitHub Artifacts (Windows)
+        if: runner.os == 'Windows'
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample_account-unsigned-${{ env.RELEASE_TAG }}
+          path: signpath-input/sample_account.exe
+          retention-days: 1
+
+      - name: Submit signing request to SignPath (Windows)
+        if: runner.os == 'Windows'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token:                 ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id:           ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug:              ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug:       ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id:        ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion:       true
+          output-artifact-directory: signpath-output
+
+      - name: Replace unsigned exe with signed exe (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp signpath-output/sample_account.exe \
+             "target/${{ matrix.target }}/release/sample_account.exe"
+
+      - name: Verify Authenticode signature (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # signtool ships with the Windows SDK on the GitHub-hosted
+          # windows-latest runner. The wildcard tolerates SDK version drift.
+          $signtool = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' |
+            Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          & "$signtool" verify /pa /v "target/${{ matrix.target }}/release/sample_account.exe"
+
+      # ----- Build the release archive (all OSes) -----
+      # All signing/staple work is complete by this point — the binary
+      # bytes are now final and the archive can be hashed.
+
+      - name: Assemble archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="dist/sample_account-${RELEASE_TAG}-${{ matrix.target }}"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.target }}/release/sample_account${{ matrix.bin_ext }}" "$STAGE/"
+          cp LICENSE README.md "$STAGE/"
+          echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
+
+      - name: Pack tar.gz (Linux / macOS)
+        if: matrix.archive_ext == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="dist/sample_account-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
+          # Files at archive root (matches the existing taiki-e layout
+          # users already pull from older releases).
+          tar -C "$STAGE_DIR" -czf "$ARCHIVE" .
+          echo "ARCHIVE_PATH=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Pack zip (Windows)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          $archive = "dist/sample_account-${env:RELEASE_TAG}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "${env:STAGE_DIR}/*" -DestinationPath $archive -Force
+          "ARCHIVE_PATH=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Generate SHA-256 checksum (post-signing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # POST-signing checksum — running this earlier produces wrong
+          # values because notarization staple + Authenticode embed change
+          # the binary bytes (and therefore the archive bytes).
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "$(basename "$ARCHIVE_PATH")") > "${ARCHIVE_PATH}.sha256"
+          else
+            (cd dist && shasum -a 256 "$(basename "$ARCHIVE_PATH")") > "${ARCHIVE_PATH}.sha256"
+          fi
+
+      # ----- cosign keyless signing of the final archive (all OSes) -----
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign archive with cosign keyless
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Sigstore bundle (signature + cert + Rekor inclusion proof)
+          # in a single file users can verify offline against the Rekor
+          # transparency log entry.
+          cosign sign-blob \
+            --yes \
+            --bundle "${ARCHIVE_PATH}.cosign.bundle" \
+            "$ARCHIVE_PATH"
+
+      # ----- Upload to the GitHub Release -----
+
+      - name: Upload archive + checksum + cosign bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" \
+            "$ARCHIVE_PATH" \
+            "${ARCHIVE_PATH}.sha256" \
+            "${ARCHIVE_PATH}.cosign.bundle" \
+            --clobber
