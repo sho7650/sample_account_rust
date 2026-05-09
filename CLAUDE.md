@@ -277,7 +277,7 @@ commit messages on the squash-merge title.
    | Target | Signing | Notarization | Provenance |
    |---|---|---|---|
    | Linux x86_64 | — | — | cosign keyless (sigstore OIDC) |
-   | macOS aarch64 | Developer ID + Hardened Runtime | Apple notarytool + stapler | cosign keyless |
+   | macOS aarch64 | Developer ID + Hardened Runtime | Apple notarytool (no staple — see docs/release-signing.md §"Why macOS notarization is NOT stapled") | cosign keyless |
    | Windows x86_64 | **deferred** (SignPath OSS pending) | — | cosign keyless |
 
 5. Each release page carries 9 assets: 3 archives, 3 `.sha256`

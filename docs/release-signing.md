@@ -9,7 +9,7 @@ in the README's "Verifying release artifacts" section.
 | Target | What | Tool | Cost | Status |
 |---|---|---|---|---|
 | **Linux x86_64** | The `.tar.gz` archive | cosign keyless (sigstore OIDC) | $0 | Active |
-| **macOS aarch64** | The Mach-O binary, then the `.tar.gz` archive | Apple Developer ID Application + Hardened Runtime + `xcrun notarytool` + `xcrun stapler`, then cosign keyless | Apple Developer Program: **$99 / yr** | Active |
+| **macOS aarch64** | The Mach-O binary, then the `.tar.gz` archive | Apple Developer ID Application + Hardened Runtime + `xcrun notarytool`, then cosign keyless. **No stapling** — see below. | Apple Developer Program: **$99 / yr** | Active |
 | **Windows x86_64** | The `.zip` archive only (Authenticode of the .exe is deferred — see below) | cosign keyless | $0 | Active (cosign only) |
 
 Total recurring cash cost: **$99 / yr** (Apple). Apple cert is valid
@@ -32,6 +32,83 @@ alternative path like Azure Trusted Signing is adopted).
 
 Provenance is still cryptographically verifiable on Windows via
 cosign — the missing piece is purely OS-level reputation/UX.
+
+### Why macOS notarization is NOT stapled
+
+Apple's `xcrun stapler` writes the notarization ticket into the
+extended attributes / resource fork of a **container**: `.app`
+bundles, `.dmg` disk images, `.pkg` installer packages, `.kext`,
+`.dext`. **A raw Mach-O command-line binary has no such container**,
+so there is nowhere to put the ticket. Calling stapler on one fails
+with exit 73 / "CloudKit returned error 4096" — the message is
+misleading; it is not a propagation issue.
+
+This is documented behavior, not a bug. Authoritative sources:
+
+- **Apple Developer Forums / docs**: stapling is *optional*. From
+  Apple's "Customizing the Notarization Workflow" page (paraphrased
+  by community members and Apple staff replies): if you choose to
+  skip stapling, your software still functions — users' systems
+  verify notarization with Apple's servers instead of using a
+  locally stapled ticket.
+- **Rob Allen, "Notarising a macOS standalone binary"**
+  ([akrabat.com](https://akrabat.com/notarising-a-macos-standalone-binary/)):
+  > "for a standalone binary, _this cannot be done_ as there is no
+  > directory into which to store the notarisation file."
+  > "For standalone binaries GateKeeper checks directly with Apple's
+  > servers the first time they are run, so stapling is unnecessary."
+- **Random Errata, "A very rough guide to notarizing CLI apps for
+  macOS" (2024)**
+  ([randomerrata.com](https://www.randomerrata.com/articles/2024/notarize/)):
+  distributes as `.tar.gz`, accepts the trade-off. Notes a `.dmg`
+  would be "nicer" because it could be stapled for offline
+  verification, but doesn't implement that.
+- **ScriptingOSX, "Notarize a Command Line Tool with notarytool"**
+  ([scriptingosx.com](https://scriptingosx.com/2021/07/notarize-a-command-line-tool-with-notarytool/)):
+  > "Command Line Tools can be signed, but not directly notarized.
+  > You can however notarize a pkg file containing the Command Line
+  > Tool. Also, it is much easier for users and administrators to
+  > install your tool when it comes in a proper installation
+  > package."
+
+We therefore: codesign the binary, submit to notarytool (status:
+Accepted), and **stop there**. The notarization record exists in
+Apple's database — Gatekeeper will fetch and verify it at first
+launch on the user's Mac.
+
+#### End-user implication
+
+- **Online at first launch (typical case)** — Gatekeeper queries
+  Apple to confirm notarization, caches the result locally, and the
+  binary runs with no popup, no `xattr` step. All subsequent runs
+  work offline.
+- **Completely offline at first launch (uncommon)** — Gatekeeper
+  cannot reach Apple, may refuse to launch the binary or show a
+  warning. The user can: connect to a network and re-launch; OR
+  manually trust via System Settings → Privacy & Security; OR run
+  `xattr -d com.apple.quarantine sample_account` as a one-time
+  override.
+
+Same trade-off adopted by ripgrep, bat, uv, and other major Rust
+CLI tools.
+
+#### Future option: `.pkg` distribution
+
+If demand for offline-first-launch verification arises, the
+upgrade path is:
+
+1. After codesign + notarize-and-staple-skip, wrap the signed Mach-O
+   in a `.pkg` via `productbuild --component sample_account /usr/local/bin sample_account.pkg`.
+2. codesign the `.pkg` with the Developer ID Installer certificate
+   (a separate cert from Developer ID Application — needs to be
+   added to the Apple Developer portal and the GitHub Secrets).
+3. Submit the `.pkg` to notarytool, wait for Accepted.
+4. `xcrun stapler staple sample_account.pkg` — this works because
+   `.pkg` is a stapleable container.
+5. Distribute the `.pkg` as the macOS asset instead of `.tar.gz`.
+
+This is deferred — current users seem fine with the online-first-
+launch model.
 
 ### Re-enabling Windows Authenticode
 
@@ -193,9 +270,10 @@ The cert in your Apple Developer account expires every 5 years. Action:
    and `MACOS_DEVELOPER_ID_P12_PASSWORD` and
    `MACOS_DEVELOPER_ID_IDENTITY` in the GitHub environment.
 3. **Old binaries continue to work** because each signing run captures
-   a `--timestamp` from Apple's TSA, and the staple is offline. An
-   expired signing cert does not retroactively invalidate already-
-   notarized binaries.
+   a `--timestamp` from Apple's TSA. An expired signing cert does not
+   retroactively invalidate already-notarized binaries — the
+   notarization record in Apple's database is matched by the
+   binary's signature hash, not by cert validity.
 
 ### App Store Connect API key
 
@@ -212,8 +290,10 @@ itself is owned by SignPath and rotated by them.
 ### Apple Developer Program annual renewal
 
 $99/yr. Set a calendar reminder. **If the membership lapses**, no new
-binaries can be notarized; existing stapled releases continue to work
-because the staple is offline-verifiable.
+binaries can be notarized. Existing notarized binaries keep working
+as long as Gatekeeper can reach Apple's servers at first launch on
+each user's Mac (the notarization record stays in Apple's database
+even after membership lapse, until Apple actively revokes it).
 
 ## Failure modes & recovery
 
@@ -221,7 +301,7 @@ because the staple is offline-verifiable.
 |---|---|---|
 | `notarytool submit` returns "Invalid" | Hardened Runtime missing, or the binary uses a disallowed entitlement. | Re-run with `--options=runtime` (already set). The notarytool log URL is printed on failure — open it for the per-issue list. Our binary uses no JIT / no special frameworks, so this should not happen for the standard build. |
 | `notarytool submit --wait` times out at 30 min | Apple notary service slow / incident. | Re-run via `workflow_dispatch` with the same tag once Apple is back. The workflow uses `gh release upload --clobber` so re-runs are idempotent. |
-| Staple exits 73 / "CloudKit returned error 4096" | Notarization succeeded but the ticket has not propagated to CloudKit yet (typical 30s-3min delay). | The workflow now retries `xcrun stapler staple` up to 6 times with 30s pauses (~2.5 min total tolerance). If even that times out, re-run via `workflow_dispatch -f tag=vX.Y.Z` after waiting another 5-10 min. |
+| Staple exits 73 / "CloudKit returned error 4096" | The binary is a **standalone Mach-O**, which `xcrun stapler` does not support — Apple only staples `.app` / `.dmg` / `.pkg` / `.kext` / `.dext`. The error is misleading; it is not actually CloudKit propagation. | The workflow does not call stapler at all — see "Why macOS notarization is NOT stapled" above for the rationale and the upgrade path to `.pkg` distribution if offline-verifiable signing is required. |
 | `codesign` complains "no identity found" | `.p12` import failed silently OR the `MACOS_DEVELOPER_ID_IDENTITY` string does not match what was imported. | Verify the `.p12` opens locally with the stored password; verify the IDENTITY string with `security find-identity -v -p codesigning` on a Mac that has the cert imported. |
 | SignPath action returns 403 (when re-enabled) | API token revoked/expired, or Trusted Build System not configured on the policy. | Issue a new token; add a `GitHub Actions` Trusted Build System to the policy. |
 | SignPath action returns 404 (when re-enabled) | `SIGNPATH_PROJECT_SLUG` or `SIGNPATH_SIGNING_POLICY_SLUG` mismatch. | Verify slugs in the SignPath dashboard (URL-friendly form, not display name). |
