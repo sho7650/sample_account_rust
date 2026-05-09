@@ -265,14 +265,34 @@ commit messages on the squash-merge title.
 ## Release flow
 
 1. Land conventional `feat:` / `fix:` PRs on `main`.
-2. The [`release-please` workflow](.github/workflows/release-please.yml)
-   opens or updates a "release PR" titled `chore(main): release X.Y.Z`.
+2. The [`release` workflow](.github/workflows/release.yml) runs on every
+   `main` push. The `release-please` job opens or updates a "release PR"
+   titled `chore(main): release X.Y.Z`.
 3. Merge the release PR — it tags `vX.Y.Z` and creates a GitHub Release.
-4. The [`release-binaries` workflow](.github/workflows/release-binaries.yml)
-   fires on `release: created`, builds 3 native targets (Linux x86_64,
-   Windows MSVC, macOS Apple Silicon) via
-   [taiki-e/upload-rust-binary-action](https://github.com/taiki-e/upload-rust-binary-action),
-   and uploads 6 assets (3 archives + 3 `.sha256`).
+   In the same workflow run (chained via `needs:`, no token-event rebound)
+   the `upload-assets` job builds, signs, and uploads the binaries.
+4. Per-platform signing chain (see `docs/release-signing.md` for the full
+   maintainer runbook including secret rotation):
+
+   | Target | Signing | Notarization | Provenance |
+   |---|---|---|---|
+   | Linux x86_64 | — | — | cosign keyless (sigstore OIDC) |
+   | macOS aarch64 | Developer ID + Hardened Runtime | Apple notarytool + stapler | cosign keyless |
+   | Windows x86_64 | **deferred** (SignPath OSS pending) | — | cosign keyless |
+
+5. Each release page carries 9 assets: 3 archives, 3 `.sha256`
+   checksums (generated AFTER signing), 3 `.cosign.bundle` Sigstore
+   bundles. README §"Verifying release artifacts" documents the
+   end-user verification commands.
+
+The `upload-assets` job is gated on the `release-signing` GitHub
+environment so required-reviewer protection can hold every release
+until a maintainer approves. The 6 secrets that environment must
+contain (all macOS; SignPath secrets deferred until OSS approval) are
+listed at the top of `release.yml` and in `docs/release-signing.md`.
+
+`workflow_dispatch` with `tag: v0.0.0-signing-test` is the recommended
+dry-run path before merging changes to the workflow itself.
 
 ## Planning docs
 

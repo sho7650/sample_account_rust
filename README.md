@@ -21,7 +21,7 @@ Download the appropriate archive for your platform from the [latest GitHub Relea
 | Windows x86_64 | `sample_account-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
 | macOS Apple Silicon | `sample_account-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
 
-Each archive contains the `sample_account` binary, `LICENSE`, and `README.md`. A matching `.sha256` checksum is published alongside.
+Each archive contains the `sample_account` binary, `LICENSE`, and `README.md`. A matching `.sha256` checksum and a `.cosign.bundle` Sigstore signature are published alongside (see [Verifying release artifacts](#verifying-release-artifacts) below).
 
 ```sh
 # Linux / macOS example
@@ -31,10 +31,7 @@ tar -xzf sample_account.tar.gz
 ./sample_account -ilfm 10
 ```
 
-On macOS the first run may be blocked by Gatekeeper because the binary is not code-signed:
-```sh
-xattr -d com.apple.quarantine sample_account
-```
+The macOS binary is signed with a Developer ID Application certificate and notarized by Apple, so it runs on a clean Mac with no `xattr` step. The Windows binary is **not** Authenticode-signed yet (deferred — see [Verifying release artifacts](#verifying-release-artifacts) below); SmartScreen will warn on first run, just click "More info" → "Run anyway". All archives carry cosign signatures that verify provenance regardless of platform.
 
 For platforms not in the prebuilt list (Linux ARM/musl, Intel macOS, Windows MinGW) build from source via `cargo install --git https://github.com/sho7650/sample_account_rust`.
 
@@ -58,6 +55,75 @@ sample_account -ilfm 3         # data is baked in, no data/ needed next to binar
 ```
 
 (Closes [issue #1](https://github.com/sho7650/sample_account_rust/issues/1).)
+
+## Verifying release artifacts
+
+All release archives are signed. You can verify any combination of the
+checks below — none of them is required to *run* the binary, but they
+let you confirm the artifact came from this repository's release
+pipeline and has not been tampered with in transit.
+
+### All platforms — SHA-256 checksum
+
+```sh
+sha256sum -c sample_account-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.sha256
+# macOS:
+shasum -a 256 -c sample_account-vX.Y.Z-aarch64-apple-darwin.tar.gz.sha256
+```
+
+### All platforms — Sigstore (cosign) keyless signature
+
+The `.cosign.bundle` file contains the signature, the short-lived
+signing certificate, and the Rekor transparency-log inclusion proof —
+everything you need to verify offline. [Install cosign](https://docs.sigstore.dev/cosign/system_config/installation/), then:
+
+```sh
+cosign verify-blob \
+  --bundle  sample_account-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz.cosign.bundle \
+  --certificate-identity-regexp '^https://github\.com/sho7650/sample_account_rust/' \
+  --certificate-oidc-issuer     https://token.actions.githubusercontent.com \
+  sample_account-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+```
+
+A successful run prints `Verified OK`. Tampering with even one byte of
+the archive causes the check to fail.
+
+### macOS — Apple notarization + Developer ID
+
+The macOS binary is signed with a Developer ID Application certificate,
+hardened-runtime-enabled, notarized by Apple, and stapled. Gatekeeper
+accepts it without any `xattr` workaround. To inspect the signature:
+
+```sh
+codesign --verify --deep --strict --verbose=2 sample_account
+codesign -dv --verbose=4 sample_account               # show signing identity + team ID
+xcrun stapler validate sample_account                 # confirm the notarization staple
+```
+
+### Windows — Authenticode (deferred)
+
+The Windows `.exe` is **not** Authenticode-signed in current releases.
+SmartScreen will show a "Windows protected your PC" warning on first
+run; click "More info" → "Run anyway" to proceed. Provenance is still
+verifiable via the cosign bundle above — the warning is purely an
+OS-level UX issue, not a security gap if the cosign verification
+succeeds.
+
+Authenticode signing will be re-enabled once the SignPath.io
+Foundation OSS application is approved (the Free Trial tier does not
+support the OIDC-based origin verification we require).
+
+### Legacy (unsigned) releases
+
+Releases **before v0.7.x** were not signed. If you are using one of
+those, the macOS Gatekeeper workaround still applies:
+
+```sh
+xattr -d com.apple.quarantine sample_account
+```
+
+We recommend updating to a current release rather than running
+unsigned binaries.
 
 ## Build & development
 
