@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/sho7650/sample_account_rust/compare/v0.7.0...v0.8.0) (2026-05-09)
+
+
+### Features
+
+* **release:** sign release binaries with cosign + Apple notarize + SignPath ([998934e](https://github.com/sho7650/sample_account_rust/commit/998934ef8bd803e344d804e936340543daf48d16))
+* **release:** sign release binaries with cosign + Apple notarize + SignPath ([02d7f3a](https://github.com/sho7650/sample_account_rust/commit/02d7f3a5cf7c8853f6e9efc7f4c01895a2c4ee13))
+
 ## [0.7.0](https://github.com/sho7650/sample_account_rust/compare/v0.6.1...v0.7.0) (2026-05-09)
 
 
