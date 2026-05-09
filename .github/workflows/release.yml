@@ -28,7 +28,12 @@ name: release
 # Signing chain per target:
 #   Linux x86_64    : cosign keyless (sigstore OIDC) on the archive.
 #   macOS aarch64   : Developer ID Application + Hardened Runtime +
-#                     Apple notarytool + stapler, then cosign keyless.
+#                     Apple notarytool, then cosign keyless. Stapling
+#                     is intentionally skipped — see
+#                     docs/release-signing.md §"Why macOS notarization
+#                     is NOT stapled". Standalone Mach-O binaries
+#                     cannot be stapled; Gatekeeper checks
+#                     notarization online at first launch instead.
 #   Windows x86_64  : cosign keyless only. Authenticode signing is
 #                     DEFERRED — SignPath.io's Free Trial does not
 #                     support Trusted Build Systems (OIDC origin
@@ -234,24 +239,27 @@ jobs:
 
           rm -f "$KEY_PATH" "$ZIP_PATH"
 
-          # Staple the notarization ticket so the binary verifies offline.
-          # Apple's CloudKit can take 30s-3min to propagate the ticket
-          # after notarytool reports Accepted; stapler exits 73
-          # ("CloudKit returned error 4096") if it polls before the
-          # ticket is visible. Retry with exponential-ish backoff.
-          for attempt in 1 2 3 4 5 6; do
-            if xcrun stapler staple "$BIN_PATH"; then
-              echo "stapler staple succeeded on attempt $attempt"
-              break
-            fi
-            if [ "$attempt" -eq 6 ]; then
-              echo "::error::stapler staple failed after 6 attempts (CloudKit propagation timeout)" >&2
-              exit 1
-            fi
-            echo "stapler attempt $attempt failed; sleeping 30s before retry"
-            sleep 30
-          done
-          xcrun stapler validate "$BIN_PATH"
+          # NOTE: we deliberately do NOT call `xcrun stapler staple` on
+          # the binary. Apple's stapler only supports .app / .dmg / .pkg
+          # / .kext / .dext containers — standalone Mach-O binaries
+          # cannot be stapled (the call exits 73 with "CloudKit
+          # returned error 4096"). This is a documented Apple limit,
+          # not a transient failure:
+          #   https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
+          #   > If your distribution package isn't a disk image, ZIP
+          #   > archive, or installer package, skip the stapling step.
+          #
+          # Implication for end users: Gatekeeper checks notarization
+          # ONLINE the first time the binary runs. Users with network
+          # at first launch get a clean experience (no popup, no
+          # `xattr` workaround). Users running completely offline at
+          # first launch may see a warning. This is the same trade-off
+          # adopted by ripgrep, bat, uv, and other major Rust CLIs.
+          #
+          # Re-confirm the signature is intact post-notarization (the
+          # Mach-O contents themselves did not change — Apple's
+          # notarization is a database record, not a binary mutation).
+          codesign --verify --deep --strict --verbose=2 "$BIN_PATH"
 
       - name: Cleanup keychain (macOS)
         if: runner.os == 'macOS' && always()
