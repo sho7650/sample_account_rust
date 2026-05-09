@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod field;
 pub mod generators;
+pub mod output;
 pub mod registry;
 pub mod repos;
 pub mod rng;
