@@ -54,12 +54,7 @@ fn output_without_zip_writes_plain_csv_file() {
     let path = tmp_path("plain.csv");
     let _ = std::fs::remove_file(&path);
 
-    let out = run_pinned(&[
-        "--output",
-        path.to_str().unwrap(),
-        "-ilfm",
-        "5",
-    ]);
+    let out = run_pinned(&["--output", path.to_str().unwrap(), "-ilfm", "5"]);
     assert_ok(&out);
 
     let written = std::fs::read(&path).expect("read written CSV");
@@ -76,13 +71,7 @@ fn zip_with_output_produces_valid_archive_with_expected_csv() {
     let path = tmp_path("archive.zip");
     let _ = std::fs::remove_file(&path);
 
-    let out = run_pinned(&[
-        "--output",
-        path.to_str().unwrap(),
-        "--zip",
-        "-ilfm",
-        "5",
-    ]);
+    let out = run_pinned(&["--output", path.to_str().unwrap(), "--zip", "-ilfm", "5"]);
     assert_ok(&out);
 
     let bytes = std::fs::read(&path).expect("read written zip");

@@ -223,7 +223,11 @@ fn parse_jobs_value(v: &str) -> Result<u32, String> {
 /// advance `i` to consume the value token). Returns `Some(Err)` if the
 /// token *was* the flag but the value was missing or empty. Returns
 /// `None` if not an --output flag.
-fn parse_output_token(token: &str, argv: &[String], i: &mut usize) -> Option<Result<String, String>> {
+fn parse_output_token(
+    token: &str,
+    argv: &[String],
+    i: &mut usize,
+) -> Option<Result<String, String>> {
     if let Some(v) = token.strip_prefix("--output=") {
         if v.is_empty() {
             return Some(Err("missing argument for --output".into()));
@@ -459,9 +463,7 @@ mod tests {
         let a = parse(&["--zip", "-i", "5"]);
         assert!(a.zip);
         assert!(
-            a.error
-                .as_ref()
-                .is_some_and(|s| s.contains("--output")),
+            a.error.as_ref().is_some_and(|s| s.contains("--output")),
             "expected error mentioning --output, got {:?}",
             a.error
         );
