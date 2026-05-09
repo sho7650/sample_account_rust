@@ -278,18 +278,18 @@ commit messages on the squash-merge title.
    |---|---|---|---|
    | Linux x86_64 | — | — | cosign keyless (sigstore OIDC) |
    | macOS aarch64 | Developer ID + Hardened Runtime | Apple notarytool + stapler | cosign keyless |
-   | Windows x86_64 | Authenticode via SignPath.io | — | cosign keyless |
+   | Windows x86_64 | **deferred** (SignPath OSS pending) | — | cosign keyless |
 
-5. Each release page therefore carries 9 assets: 3 archives, 3 `.sha256`
+5. Each release page carries 9 assets: 3 archives, 3 `.sha256`
    checksums (generated AFTER signing), 3 `.cosign.bundle` Sigstore
    bundles. README §"Verifying release artifacts" documents the
    end-user verification commands.
 
 The `upload-assets` job is gated on the `release-signing` GitHub
 environment so required-reviewer protection can hold every release
-until a maintainer approves. The 10 secrets that environment must
-contain are listed at the top of `release.yml` and in
-`docs/release-signing.md`.
+until a maintainer approves. The 6 secrets that environment must
+contain (all macOS; SignPath secrets deferred until OSS approval) are
+listed at the top of `release.yml` and in `docs/release-signing.md`.
 
 `workflow_dispatch` with `tag: v0.0.0-signing-test` is the recommended
 dry-run path before merging changes to the workflow itself.

@@ -31,7 +31,7 @@ tar -xzf sample_account.tar.gz
 ./sample_account -ilfm 10
 ```
 
-The macOS binary is signed with a Developer ID Application certificate and notarized by Apple, so it runs on a clean Mac with no `xattr` step. The Windows binary is signed with an Authenticode certificate via SignPath.io. See [Verifying release artifacts](#verifying-release-artifacts) for the verification commands per platform.
+The macOS binary is signed with a Developer ID Application certificate and notarized by Apple, so it runs on a clean Mac with no `xattr` step. The Windows binary is **not** Authenticode-signed yet (deferred — see [Verifying release artifacts](#verifying-release-artifacts) below); SmartScreen will warn on first run, just click "More info" → "Run anyway". All archives carry cosign signatures that verify provenance regardless of platform.
 
 For platforms not in the prebuilt list (Linux ARM/musl, Intel macOS, Windows MinGW) build from source via `cargo install --git https://github.com/sho7650/sample_account_rust`.
 
@@ -100,18 +100,18 @@ codesign -dv --verbose=4 sample_account               # show signing identity + 
 xcrun stapler validate sample_account                 # confirm the notarization staple
 ```
 
-### Windows — Authenticode
+### Windows — Authenticode (deferred)
 
-The `.exe` is Authenticode-signed with a timestamp via SignPath.io.
-SmartScreen accepts it without warnings (or with reduced warnings on
-brand-new releases while reputation builds). To inspect:
+The Windows `.exe` is **not** Authenticode-signed in current releases.
+SmartScreen will show a "Windows protected your PC" warning on first
+run; click "More info" → "Run anyway" to proceed. Provenance is still
+verifiable via the cosign bundle above — the warning is purely an
+OS-level UX issue, not a security gap if the cosign verification
+succeeds.
 
-```powershell
-# signtool ships with the Windows SDK
-signtool verify /pa /v sample_account.exe
-```
-
-Or right-click `sample_account.exe` → Properties → Digital Signatures.
+Authenticode signing will be re-enabled once the SignPath.io
+Foundation OSS application is approved (the Free Trial tier does not
+support the OIDC-based origin verification we require).
 
 ### Legacy (unsigned) releases
 

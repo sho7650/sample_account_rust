@@ -6,14 +6,52 @@ in the README's "Verifying release artifacts" section.
 
 ## What gets signed
 
-| Target | What | Tool | Cost |
-|---|---|---|---|
-| **Linux x86_64** | The `.tar.gz` archive | cosign keyless (sigstore OIDC) | $0 |
-| **macOS aarch64** | The Mach-O binary, then the `.tar.gz` archive | Apple Developer ID Application + Hardened Runtime + `xcrun notarytool` + `xcrun stapler`, then cosign keyless | Apple Developer Program: **$99 / yr** |
-| **Windows x86_64** | The `.exe`, then the `.zip` archive | SignPath.io Authenticode signing, then cosign keyless | SignPath Foundation OSS: **$0** (subject to OSS approval) |
+| Target | What | Tool | Cost | Status |
+|---|---|---|---|---|
+| **Linux x86_64** | The `.tar.gz` archive | cosign keyless (sigstore OIDC) | $0 | Active |
+| **macOS aarch64** | The Mach-O binary, then the `.tar.gz` archive | Apple Developer ID Application + Hardened Runtime + `xcrun notarytool` + `xcrun stapler`, then cosign keyless | Apple Developer Program: **$99 / yr** | Active |
+| **Windows x86_64** | The `.zip` archive only (Authenticode of the .exe is deferred — see below) | cosign keyless | $0 | Active (cosign only) |
 
 Total recurring cash cost: **$99 / yr** (Apple). Apple cert is valid
 5 years; the Apple Developer Program membership renews annually.
+
+### Why Windows Authenticode is deferred
+
+SignPath.io is the obvious zero-cost Authenticode path for an OSS
+project, but their **Free Trial tier does not support Trusted Build
+Systems** — the OIDC-based origin verification that lets SignPath
+confirm a signing request actually came from this repository's CI
+rather than from a leaked API token.
+
+Without that mechanism the API token becomes the sole authentication
+factor, which is below the security bar we want for release signing.
+The Authenticode steps are therefore commented out in `release.yml`
+and end users will continue to see the SmartScreen warning on the
+Windows binary until the Foundation OSS tier is approved (or an
+alternative path like Azure Trusted Signing is adopted).
+
+Provenance is still cryptographically verifiable on Windows via
+cosign — the missing piece is purely OS-level reputation/UX.
+
+### Re-enabling Windows Authenticode
+
+When SignPath OSS is approved (or when migrating to Azure Trusted
+Signing), restore these 4 GitHub Secrets to the `release-signing`
+environment:
+
+| Secret | Notes |
+|---|---|
+| `SIGNPATH_API_TOKEN` | scoped to the production signing policy |
+| `SIGNPATH_ORGANIZATION_ID` | UUID |
+| `SIGNPATH_PROJECT_SLUG` | URL-friendly project slug (e.g. `sample_account`) |
+| `SIGNPATH_SIGNING_POLICY_SLUG` | URL-friendly policy slug (e.g. `CI_Resease`) |
+
+…and re-add the 5 Windows steps removed in commit
+[TBD: link to the deferral commit] to `release.yml`. The signing
+policy in SignPath must have a `GitHub Actions` Trusted Build
+System configured against `sho7650/sample_account_rust` /
+`.github/workflows/release.yml` / `refs/tags/v*` before any signing
+request will succeed.
 
 ## Why these tools
 
@@ -33,7 +71,7 @@ Total recurring cash cost: **$99 / yr** (Apple). Apple cert is valid
 
 ## Required GitHub Secrets
 
-All 10 secrets MUST live in a single GitHub environment named
+All 6 secrets MUST live in a single GitHub environment named
 `release-signing` (Repository → Settings → Environments → New
 environment). Repository-level secrets are visible to too many
 workflows; environment-level secrets are scoped to the job that
@@ -48,10 +86,10 @@ required-reviewer policy.
 | `MACOS_NOTARY_API_KEY_BASE64` | App Store Connect → Users and Access → Integrations → App Store Connect API → "+" → "Developer" role → download `AuthKey_XXXXXXXXXX.p8` (one-time download), then `base64 -i AuthKey_*.p8 \| pbcopy`. | The .p8 is downloadable exactly once. Store the original somewhere durable as well. |
 | `MACOS_NOTARY_API_KEY_ID` | Shown in App Store Connect next to the key, e.g. `ABCDE12345`. | 10-char alphanumeric. |
 | `MACOS_NOTARY_API_ISSUER_ID` | Shown at the top of the App Store Connect API page. | UUID format. |
-| `SIGNPATH_API_TOKEN` | SignPath.io → User profile → API tokens → New token, scoped to a single signing policy. | Rotate annually. |
-| `SIGNPATH_ORGANIZATION_ID` | SignPath.io → organization settings → ID. | UUID. Not strictly secret but kept here for symmetry. |
-| `SIGNPATH_PROJECT_SLUG` | SignPath.io → project settings → slug. | E.g. `sample-account`. |
-| `SIGNPATH_SIGNING_POLICY_SLUG` | SignPath.io → project → signing policies → slug of the release policy. | E.g. `release-signing`. |
+
+The 4 SignPath secrets needed to re-enable Windows Authenticode
+signing are documented above under
+"[Re-enabling Windows Authenticode](#re-enabling-windows-authenticode)".
 
 ## One-time setup
 
@@ -75,19 +113,20 @@ required-reviewer policy.
    Note Key ID + Issuer ID. These become `MACOS_NOTARY_API_KEY_BASE64`,
    `MACOS_NOTARY_API_KEY_ID`, `MACOS_NOTARY_API_ISSUER_ID`.
 
-### SignPath.io OSS application
+### SignPath.io OSS application (deferred)
+
+Currently NOT in use — see
+"[Why Windows Authenticode is deferred](#why-windows-authenticode-is-deferred)".
+Steps for when re-enabling:
 
 1. Apply at [signpath.io/foundation](https://signpath.io/foundation).
    Provide the repository URL, MIT license, and a short description.
    Approval is case-by-case and may take 1-4 weeks.
-2. Once approved: create the project, add the GitHub repository as a
-   trusted source (OIDC binding to `sho7650/sample_account_rust`),
-   define a signing policy (e.g. `release-signing`) that:
-   - allows signing only from tagged workflow runs,
-   - binds to the `release` workflow file,
-   - optionally requires human approval per signing request.
+2. Once approved: create the project, define a signing policy, and
+   add a `GitHub Actions` Trusted Build System to that policy bound
+   to `sho7650/sample_account_rust` /
+   `.github/workflows/release.yml` / `refs/tags/v*`.
 3. User profile → API tokens → create a token scoped to that policy.
-   This is `SIGNPATH_API_TOKEN`.
 
 ### GitHub environment
 
@@ -133,8 +172,9 @@ After the run finishes, verify each artifact on a clean machine:
   should appear and no `xattr -d` should be needed. Then disconnect
   from the network and run again — staple is offline-verifiable.
 - **Windows**: download the `.zip` via Edge (sets MotW), extract, run
-  `sample_account.exe --help`. SmartScreen warning should be reduced
-  or absent. `signtool verify /pa /v sample_account.exe` should pass.
+  `sample_account.exe --help`. SmartScreen warning IS expected (the
+  exe is not Authenticode-signed yet). Click "More info" → "Run
+  anyway" to proceed. The `.cosign.bundle` should still verify.
 
 Once verified, delete the throwaway:
 
@@ -163,7 +203,7 @@ There is no enforced rotation, but treat as you would any API
 credential — rotate at least annually. Generate a new key, update
 secrets, revoke the old key.
 
-### SignPath API token
+### SignPath API token (when re-enabled)
 
 Recommended annual rotation. Generate a new token in SignPath, update
 `SIGNPATH_API_TOKEN`, revoke the old one. The signing certificate
@@ -183,8 +223,8 @@ because the staple is offline-verifiable.
 | `notarytool submit --wait` times out at 30 min | Apple notary service slow / incident. | Re-run via `workflow_dispatch` with the same tag once Apple is back. The workflow uses `gh release upload --clobber` so re-runs are idempotent. |
 | Staple shows `CloudKit returned error 4096` | Notarization happened but the ticket has not propagated yet. | Wait 5-10 min and re-run the staple step (re-trigger the workflow). |
 | `codesign` complains "no identity found" | `.p12` import failed silently OR the `MACOS_DEVELOPER_ID_IDENTITY` string does not match what was imported. | Verify the `.p12` opens locally with the stored password; verify the IDENTITY string with `security find-identity -v -p codesigning` on a Mac that has the cert imported. |
-| SignPath action returns 403 | API token revoked, expired, or scoped to a different signing policy. | Issue a new token in SignPath, scoped to the release-signing policy. Update `SIGNPATH_API_TOKEN`. |
-| SignPath action returns 404 | `SIGNPATH_PROJECT_SLUG` or `SIGNPATH_SIGNING_POLICY_SLUG` mismatch. | Verify slugs in the SignPath dashboard (URL-friendly form, not display name). |
+| SignPath action returns 403 (when re-enabled) | API token revoked/expired, or Trusted Build System not configured on the policy. | Issue a new token; add a `GitHub Actions` Trusted Build System to the policy. |
+| SignPath action returns 404 (when re-enabled) | `SIGNPATH_PROJECT_SLUG` or `SIGNPATH_SIGNING_POLICY_SLUG` mismatch. | Verify slugs in the SignPath dashboard (URL-friendly form, not display name). |
 | `cosign sign-blob` fails with OIDC error | Job missing `id-token: write` permission, or workflow run was triggered from a fork (forks have no OIDC). | Workflow already declares the permission; this should only happen if the job is restructured. Forks are filtered out by `if: github.event_name == 'push'` etc. |
 | `gh release upload` returns "release not found" | The `tag` input does not match an existing release on the repository. | Ensure the release exists (release-please creates it on the push:main path; `workflow_dispatch` requires creating it manually first). |
 
